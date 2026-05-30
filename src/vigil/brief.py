@@ -11,7 +11,8 @@ import json
 import subprocess
 from typing import Iterable
 
-CODEX_CMD = ["codex", "exec", "--json", "--sandbox", "read-only"]
+# --skip-git-repo-check: release dirs are git-archive snapshots, no .git.
+CODEX_CMD = ["codex", "exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check"]
 
 TEXT_FIELDS = ("text", "output_text", "value")
 CONTAINER_FIELDS = (
