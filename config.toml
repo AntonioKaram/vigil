@@ -1,0 +1,41 @@
+# vigil config. Secrets (Fastmail app password, OWUI webhook id+token,
+# operator personal email, optional NVD API key) live in secrets/*, not here.
+
+[caps]
+# Hard limits applied before the Codex prompt — protects the ChatGPT Plus
+# context window and forces a tighter brief.
+kev = 8
+cve = 12
+news = 8
+
+[thresholds]
+# Inclusion gates for the candidate CVE set.
+epss_top_decile = 0.90    # percentile gate
+epss_high = 0.50          # absolute EPSS gate
+cvss_high = 7.0           # CVSS from any provider (NVD / CNA / ADP)
+
+# EPSS-delta (early warning, v1): absolute increase >= this is a "mover".
+# Crossing into the top decile overnight also flags as a mover.
+epss_delta = 0.10
+
+[feeds]
+# Fourth feed (SANS ISC) is swappable — Unit 42 or Google GTIG/Mandiant are
+# the natural vendor-intel alternatives.
+rss = [
+  "https://krebsonsecurity.com/feed/",
+  "https://www.bleepingcomputer.com/feed/",
+  "https://feeds.feedburner.com/TheHackersNews",
+  "https://isc.sans.edu/rssfeed.xml",
+]
+
+[delivery]
+# Channel name is load-bearing — referenced by post.py and notify.sh.
+# Renaming requires updating both.
+channel = "vigil"
+
+[schedule]
+# StartCalendarInterval Hour=3 Minute=30 (machine local PT) == 06:30 ET.
+# 03:30 PT clears both DST transition instants; lands on 06:30 ET year-round.
+# Operator stated 06:30 Eastern. If 06:30 Pacific was intended, set hour = 6.
+hour = 3
+minute = 30

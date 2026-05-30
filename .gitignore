@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime — populated by vigil at run time, not source.
+data/
+logs/
+secrets/
+
+# uv lock can be committed if you want reproducible deploys.
+# uv.lock
