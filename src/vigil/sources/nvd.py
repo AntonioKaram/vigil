@@ -13,8 +13,8 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
+from .. import _paths
 from .._http import get
 
 NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
@@ -23,8 +23,7 @@ NVD_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 def _api_key() -> str | None:
     if key := os.environ.get("NVD_API_KEY"):
         return key.strip() or None
-    data_dir = Path(os.environ.get("AGENT_DATA_DIR", "data")).expanduser()
-    key_file = data_dir.parent / "secrets" / "nvd-api-key"
+    key_file = _paths.secrets_dir() / "nvd-api-key"
     if key_file.exists():
         return key_file.read_text().strip() or None
     return None

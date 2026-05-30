@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for vigil. Template: copy to ~/Library/LaunchAgents/ and
+  activate with:
+
+      cp deploy/com.jarvis.agent.vigil.plist ~/Library/LaunchAgents/
+      launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.jarvis.agent.vigil.plist
+
+  Disable with:
+
+      launchctl bootout gui/$UID/com.jarvis.agent.vigil
+
+  StartCalendarInterval Hour=3 Minute=30 == 03:30 machine-local PT == 06:30 ET.
+  RunAtLoad=false and KeepAlive=false: this is a once-daily, run-and-exit job.
+  WorkingDirectory is set explicitly to dodge the read-only-cwd trap that bit
+  Open WebUI in 15b.
+
+  Paths assume the prod layout ~/work/agents/vigil/{current,data,logs} where
+  `current` is a symlink to releases/<sha>/. Adjust if your layout differs.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.agent.vigil</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/jarvis/work/agents/vigil/current/run.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/jarvis/work/agents/vigil/current</string>
+    <key>StandardOutPath</key>
+    <string>/Users/jarvis/work/agents/vigil/logs/stdout/launchd.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/jarvis/work/agents/vigil/logs/stderr/launchd.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ANTHROPIC_API_KEY</key>
+        <string></string>
+        <key>OPENAI_API_KEY</key>
+        <string></string>
+        <key>AGENT_NAME</key>
+        <string>vigil</string>
+        <key>AGENT_DATA_DIR</key>
+        <string>/Users/jarvis/work/agents/vigil/data</string>
+        <key>OPEN_WEBUI_URL</key>
+        <string>http://localhost:3000</string>
+        <key>PATH</key>
+        <string>/Users/jarvis/.npm-global/bin:/Users/jarvis/work/agents/vigil/current/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+</dict>
+</plist>

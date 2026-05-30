@@ -1,10 +1,11 @@
 """vigil entry point — run once, exit.
 
 Fetches sources, applies inclusion logic, builds the Codex prompt, runs the
-brief, prints to stdout, and appends a record to runs.jsonl.
+brief, posts it to #vigil via the OWUI webhook, emails it to the operator,
+and appends a record to runs.jsonl.
 
-post.py (Open WebUI) and deliver.py (email) are not wired in this build —
-the brief lands on stdout and in runs.jsonl for local verification.
+Each delivery leg is independent. If one fails the other still ships; if
+both fail, main returns non-zero so run.sh can page via notify.sh.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import brief
+from . import _paths, brief, deliver, post
 from . import prompt as prompt_mod
 from .sources import epss, kev, nvd, rss
 
@@ -25,16 +26,6 @@ def _config_path() -> Path:
         return Path(cfg).expanduser()
     # src/vigil/__main__.py -> project root is parents[2]
     return Path(__file__).resolve().parents[2] / "config.toml"
-
-
-def _data_dir() -> Path:
-    if d := os.environ.get("AGENT_DATA_DIR"):
-        return Path(d).expanduser()
-    return Path.cwd() / "data"
-
-
-def _logs_dir() -> Path:
-    return _data_dir().parent / "logs"
 
 
 def _load_config() -> dict:
@@ -85,7 +76,7 @@ def _candidate_cves(nvd_items: list[dict],
 
 def main(argv: list[str] | None = None) -> int:
     cfg = _load_config()
-    data_dir = _data_dir()
+    data_dir = _paths.data_dir()
     data_dir.mkdir(parents=True, exist_ok=True)
 
     kev_new, kev_first = kev.get_new_kev_entries(data_dir)
@@ -121,7 +112,22 @@ def main(argv: list[str] | None = None) -> int:
     if not brief_text.endswith("\n"):
         sys.stdout.write("\n")
 
-    run_log = _logs_dir() / "runs.jsonl"
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    subject = f"vigil: daily cyber brief {today}"
+    delivery_errors: list[str] = []
+    try:
+        post.post(brief_text)
+    except Exception as e:
+        delivery_errors.append(f"post: {e!r}")
+    try:
+        deliver.send_brief(subject=subject, body=brief_text)
+    except Exception as e:
+        delivery_errors.append(f"deliver: {e!r}")
+    for err in delivery_errors:
+        level = "ERROR" if len(delivery_errors) == 2 else "WARN"
+        print(f"DELIVERY {level}: {err}", file=sys.stderr)
+
+    run_log = _paths.logs_dir() / "runs.jsonl"
     run_log.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -135,11 +141,12 @@ def main(argv: list[str] | None = None) -> int:
             "news": len(news),
             "feeds": feed_counts,
         },
+        "delivery_errors": delivery_errors,
         "brief": brief_text,
     }
     with open(run_log, "a") as f:
         f.write(json.dumps(record) + "\n")
-    return 0
+    return 1 if len(delivery_errors) == 2 else 0
 
 
 if __name__ == "__main__":
