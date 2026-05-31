@@ -32,6 +32,21 @@ rss = [
 # Channel name is load-bearing — referenced by post.py and notify.sh.
 # Renaming requires updating both.
 channel = "vigil"
+# Channel id is needed by listen.py for the bot's REST polling/posting
+# (the webhook URL embeds its own id but isn't reusable for reads).
+channel_id = "a415b633-8cd4-4017-adba-c96f97bcec28"
+
+[listener]
+# How often the listener polls for new operator questions. The spec
+# accepts up to ~30s; 25s is a reasonable middle.
+poll_seconds = 25
+# Max messages fetched per poll (newest-first; client-side filter trims).
+fetch_limit = 50
+# Content prefixes that identify vigil's own posts (webhook brief +
+# notify alerts) so the listener doesn't try to answer them. The notify
+# prefix is "[vigil" without the closing bracket so it catches both
+# `[vigil]` (brief job) and `[vigil-listener]` (listener-emitted alerts).
+own_content_prefixes = ["# vigil", "[vigil"]
 
 [schedule]
 # StartCalendarInterval Hour=3 Minute=30 (machine local PT) == 06:30 ET.

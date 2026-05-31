@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  LaunchAgent for vigil-listener (Feature 2). Polls #vigil for operator
+  follow-up questions and answers them via Codex + REST. Long-running
+  (KeepAlive=true); see listen.py for the polling logic.
+
+  Install:
+      cp deploy/com.jarvis.agent.vigil-listener.plist ~/Library/LaunchAgents/
+      launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.jarvis.agent.vigil-listener.plist
+
+  Disable:
+      launchctl bootout gui/$UID/com.jarvis.agent.vigil-listener
+
+  ThrottleInterval=30 stops a crash loop from saturating the box.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.jarvis.agent.vigil-listener</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/jarvis/work/agents/vigil/current/run-listener.sh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>WorkingDirectory</key>
+    <string>/Users/jarvis/work/agents/vigil/current</string>
+    <key>StandardOutPath</key>
+    <string>/Users/jarvis/work/agents/vigil/logs/stdout/listener.out</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/jarvis/work/agents/vigil/logs/stderr/listener.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ANTHROPIC_API_KEY</key>
+        <string></string>
+        <key>OPENAI_API_KEY</key>
+        <string></string>
+        <key>AGENT_NAME</key>
+        <string>vigil-listener</string>
+        <key>AGENT_DATA_DIR</key>
+        <string>/Users/jarvis/work/agents/vigil/data</string>
+        <key>OPEN_WEBUI_URL</key>
+        <string>http://localhost:3000</string>
+        <key>PATH</key>
+        <string>/Users/jarvis/.npm-global/bin:/Users/jarvis/work/agents/vigil/current/.venv/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
