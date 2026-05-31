@@ -47,27 +47,23 @@ from . import _paths, prompt as prompt_mod
 from .sources import atomic_write
 
 # --skip-git-repo-check: release dirs are git-archive snapshots, no .git.
-# --enable web_search: Q&A goes online (operator-accepted injection risk).
+# Web search: enabled by default in codex-cli 0.131.0+ (the previous
+# `--enable web_search` flag is deprecated and now errors out — observed
+# in v1.2.2 deploy where the deprecation message was posted as the
+# "answer" to operator follow-ups).
 CODEX_CMD_QA = [
     "codex", "exec",
     "--json", "--sandbox", "read-only",
     "--skip-git-repo-check",
-    "--enable", "web_search",
 ]
-# B3: resume by explicit thread_id (UUID), never --last. The SESSION_ID is
-# a positional argument that follows OPTIONS per `codex exec resume --help`.
-# Append the thread_id at call time.
-#
-# v1.2.2 fix: `codex exec resume` rejects `--sandbox` (it inherits the
-# sandbox policy set at session start) — leaving it in here was the latent
-# B3 bug that produced "error: unexpected argument '--sandbox' found" on
-# follow-up Q&A calls. `--skip-git-repo-check`, `--enable`, and `--json`
-# are all valid at resume time per `codex exec resume --help`.
+# B3: resume by explicit thread_id (UUID), never --last. SESSION_ID is a
+# positional that follows OPTIONS per `codex exec resume --help`; append
+# the thread_id at call time. `--sandbox` is invalid at resume (inherited
+# from session start) — fixed in v1.2.2.
 CODEX_CMD_QA_RESUME_PREFIX = [
     "codex", "exec", "resume",
     "--json",
     "--skip-git-repo-check",
-    "--enable", "web_search",
 ]
 CODEX_TIMEOUT = 600
 
