@@ -669,10 +669,18 @@ def _handle_question(client: httpx.Client, channel_id: str,
             print(f"listener: codex Q&A failed: {e}", file=sys.stderr)
             answer = _format_error_reply(e)
 
+    # v1.2.4: post under the same thread root as the operator's question,
+    # not nested under the question itself. OWUI's UI renders only one
+    # level of thread nesting, so a depth-2 reply (parent=question whose
+    # own parent is the brief) lands somewhere only a notification can
+    # see it. reply_to_id still points at the operator's message so the
+    # "replying to X" relationship is preserved.
+    q_parent = question.get("parent_id")
+    reply_parent = q_parent or qid
     try:
         post_message(
             client, channel_id, answer,
-            parent_id=qid, reply_to_id=qid,
+            parent_id=reply_parent, reply_to_id=qid,
         )
     except Exception as e:
         print(f"listener: reply post failed for q={qid[:8]}: {e}", file=sys.stderr)
