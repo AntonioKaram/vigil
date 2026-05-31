@@ -85,12 +85,36 @@ def fetch_last_24h(now: datetime | None = None) -> list[dict]:
     return list(merged.values())
 
 
+# A5: CNA UUID -> readable name. Seed with the Linux kernel CNA UUID which has
+# been flooding briefs. Add more as identified. Unknown UUIDs render as plain
+# "CNA" / "3rd-party" — better than printing a raw uuid the operator can't read.
+CNA_NAMES: dict[str, str] = {
+    "416baaa9-dc9f-4396-8d5f-8c081fb06d67": "Linux kernel",
+}
+
+
+def _is_uuid(s: str) -> bool:
+    """Cheap shape check for the 36-char 8-4-4-4-12 UUID format."""
+    if len(s) != 36:
+        return False
+    return s.count("-") == 4 and all(
+        len(part) == n for part, n in zip(s.split("-"), (8, 4, 4, 4, 12))
+    )
+
+
 def _source_label(source: str, mtype: str) -> str:
+    if source and source in CNA_NAMES:
+        return CNA_NAMES[source]
     s = (source or "").lower()
     if "nist.gov" in s:
         return "NVD"
+    is_uuid = bool(source) and _is_uuid(source)
     if mtype == "Primary":
+        if is_uuid:
+            return "CNA"
         return f"CNA ({source})" if source else "CNA"
+    if is_uuid:
+        return "3rd-party"
     return f"3rd-party ({source})" if source else "3rd-party"
 
 

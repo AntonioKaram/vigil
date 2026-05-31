@@ -18,6 +18,22 @@ cvss_high = 7.0           # CVSS from any provider (NVD / CNA / ADP)
 # Crossing into the top decile overnight also flags as a mover.
 epss_delta = 0.10
 
+[diversity_caps]
+# A3: per-source cap applied to candidates AFTER gating, BEFORE the global cve
+# cap. KEV-listed and high-EPSS items are exempt. Source labels here must
+# match CNA_NAMES in sources/nvd.py (or raw source if not resolved).
+# Cap the Linux kernel CNA, which assigns a CVE per bugfix commit and floods
+# briefs on quiet days. Other sources stay uncapped here; the global cve cap
+# still applies.
+"Linux kernel" = 3
+
+[kernel_collapse]
+# A4: when 2+ kernel-CNA items end up in the cves section AND are low-EPSS
+# AND not KEV-listed, collapse them into a single summary entry instead of
+# rendering full individual lines. Set threshold=0 to disable.
+threshold = 2
+low_epss  = 0.10
+
 [feeds]
 # Fourth feed (SANS ISC) is swappable — Unit 42 or Google GTIG/Mandiant are
 # the natural vendor-intel alternatives.
@@ -47,6 +63,21 @@ fetch_limit = 50
 # prefix is "[vigil" without the closing bracket so it catches both
 # `[vigil]` (brief job) and `[vigil-listener]` (listener-emitted alerts).
 own_content_prefixes = ["# vigil", "[vigil"]
+
+[listener.breaker]
+# B1: rolling-window post counter. If the listener posts more than
+# `threshold` answers in `window_seconds`, it trips: goes inert (keeps
+# polling, stops answering) and persists the tripped flag. Reset is
+# manual: rm ~/work/agents/vigil/data/listener-breaker.json then restart.
+# Numbers sit far above any human Q&A rate; this only catches a loop.
+window_seconds = 300
+threshold      = 10
+
+[listener.notify]
+# B2: how many consecutive loop iterations must raise before notify.sh
+# fires for the failure episode. Debounces so a single transient OWUI
+# blip doesn't page. Also fires once on circuit-breaker trip.
+consecutive_failures = 5
 
 [schedule]
 # StartCalendarInterval Hour=3 Minute=30 (machine local PT) == 06:30 ET.

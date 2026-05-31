@@ -48,14 +48,17 @@ from .sources import atomic_write
 
 # --skip-git-repo-check: release dirs are git-archive snapshots, no .git.
 # --enable web_search: Q&A goes online (operator-accepted injection risk).
-CODEX_CMD = [
+CODEX_CMD_QA = [
     "codex", "exec",
     "--json", "--sandbox", "read-only",
     "--skip-git-repo-check",
     "--enable", "web_search",
 ]
-CODEX_RESUME_CMD = [
-    "codex", "exec", "resume", "--last",
+# B3: resume by explicit thread_id (UUID), never --last. The SESSION_ID is
+# a positional argument that follows OPTIONS per `codex exec resume --help`.
+# Append the thread_id at call time.
+CODEX_CMD_QA_RESUME_PREFIX = [
+    "codex", "exec", "resume",
     "--json", "--sandbox", "read-only",
     "--skip-git-repo-check",
     "--enable", "web_search",
@@ -138,16 +141,38 @@ def fetch_messages(client: httpx.Client, channel_id: str, *,
 
 
 # ---------------------------------------------------------------------------
-# bot identity discovery
+# bot identity discovery (B4: pinned to secrets/owui-bot-id, probe is fallback)
 # ---------------------------------------------------------------------------
 
-def discover_bot_user_id(client: httpx.Client, channel_id: str) -> str:
-    """Post a tiny probe message, capture our own user_id, delete the probe.
+def load_bot_user_id(client: httpx.Client, channel_id: str) -> str:
+    """Returns the pinned bot user_id from secrets/owui-bot-id.
 
-    OWUI's self-info endpoints (/auths, /auths/api_key, /users/{id}) are
-    admin-gated, so we discover by posting + reading the response (which
-    OWUI populates with the authenticated poster's user_id).
+    If the file is missing or empty, falls back to probe-and-delete (the
+    legacy v1.1 mechanism) AND writes the discovered id to the file so
+    subsequent restarts are fast and don't leave stray probes. This makes
+    layer 1 of loop prevention reliable enough that we can drop layer 2.
     """
+    p = _paths.secrets_dir() / "owui-bot-id"
+    if p.exists():
+        pinned = p.read_text().strip()
+        if pinned:
+            return pinned
+    # Fallback: probe + delete + persist
+    print("listener: bot id not pinned; probing to discover", file=sys.stderr)
+    discovered = _discover_via_probe(client, channel_id)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(discovered)
+        try:
+            p.chmod(0o600)
+        except OSError:
+            pass
+    except OSError as e:
+        print(f"listener: warn — could not pin bot id to {p}: {e}", file=sys.stderr)
+    return discovered
+
+
+def _discover_via_probe(client: httpx.Client, channel_id: str) -> str:
     resp = post_message(
         client, channel_id,
         content="vigil-listener startup probe (auto-deleted)",
@@ -159,6 +184,10 @@ def discover_bot_user_id(client: httpx.Client, channel_id: str) -> str:
     except Exception as e:
         print(f"listener: warn — probe cleanup failed: {e}", file=sys.stderr)
     return user_id
+
+
+# Back-compat alias for any external caller (test scripts, prior smoke tests).
+discover_bot_user_id = load_bot_user_id
 
 
 # ---------------------------------------------------------------------------
@@ -196,22 +225,23 @@ def save_cursor(data_dir: Path, last_created_at: int) -> None:
 # message filtering
 # ---------------------------------------------------------------------------
 
-def is_question(msg: dict, *,
-                bot_user_id: str,
-                own_content_prefixes: list[str]) -> bool:
-    """Decide whether `msg` is an operator question we should answer.
+def should_answer(msg: dict, *,
+                  bot_user_id: str,
+                  own_content_prefixes: list[str]) -> bool:
+    """B6: respond to every operator message that passes loop prevention.
 
-    Skip if:
-      - authored by the bot (our own top-level posts)
-      - threaded reply (parent_id set) — covers both our answers and any
-        operator follow-up that's already in a thread
-      - content starts with one of the brief / notify markers (webhook
-        posts share user_id with the operator, so this is the only way
-        to tell them apart)
+    There is no question-detection heuristic — imperatives like "tell me
+    more about the OneUptime one" are valid follow-ups. The gate here is
+    pure loop prevention:
+
+      - layer 1: skip if user_id == bot_user_id. Catches our own REST
+        posts. Reliable because the bot id is pinned at setup (B4).
+      - layer 3: skip if content starts with a brief or notify prefix.
+        Catches webhook brief posts (attributed to the operator's user_id)
+        and notify alerts. Layer 2 (parent_id) was dropped in B4 so
+        threaded operator follow-ups process correctly.
     """
     if msg.get("user_id") == bot_user_id:
-        return False
-    if msg.get("parent_id"):
         return False
     content = (msg.get("content") or "").lstrip()
     for prefix in own_content_prefixes:
@@ -220,43 +250,110 @@ def is_question(msg: dict, *,
     return True
 
 
+# Back-compat alias for any external caller; new code uses `should_answer`.
+is_question = should_answer
+
+
 # ---------------------------------------------------------------------------
 # Codex Q&A
 # ---------------------------------------------------------------------------
 
-class _CodexSession:
-    """Tracks day-scoped Codex session state for multi-turn Q&A.
+def _extract_thread_id(jsonl_lines) -> str | None:
+    """Scan codex `--json` output for the thread_id.
 
-    Within the same day (context-today.json's date), we resume the previous
-    session so follow-ups like "and the second one?" work conversationally.
-    On day rollover we start fresh — yesterday's context is stale.
+    Verified against live codex-cli 0.131.0: the field is `thread_id` on the
+    top-level `thread.started` event, e.g.:
+      {"type":"thread.started","thread_id":"019e7f51-f58f-7a73-..."}
+    The defensive scan walks top-level fields rather than hardcoding the
+    event type, in case the schema drifts the way response.completed did.
+    """
+    for line in jsonl_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            evt = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(evt, dict) and isinstance(evt.get("thread_id"), str):
+            return evt["thread_id"]
+    return None
+
+
+class _CodexSession:
+    """B3: day-scoped Codex session with EXPLICIT thread_id persistence.
+
+    First Q&A call of the day runs without resume; we capture the thread_id
+    from the JSONL output and persist it to data/listener-session.json with
+    today's date. Subsequent calls that day use `codex exec resume <thread_id>`
+    so follow-ups continue the same conversation. Day rollover or a failed
+    call invalidates the thread_id and starts a fresh session.
+
+    We never use `--last` (the v1.1 mechanism) because --last picks the most
+    recent session anywhere on the box, which could be the brief job, an
+    interactive session, or a future roster agent's session.
     """
 
-    def __init__(self) -> None:
-        self._current_date: str | None = None
-        self._has_session = False
+    SESSION_FILE = "listener-session.json"
+
+    def __init__(self, data_dir: Path) -> None:
+        self._path = data_dir / self.SESSION_FILE
+        self._date, self._thread_id = self._load()
+
+    def _load(self) -> tuple[str | None, str | None]:
+        if self._path.exists():
+            try:
+                data = json.loads(self._path.read_text())
+                d = data.get("date") if isinstance(data, dict) else None
+                t = data.get("thread_id") if isinstance(data, dict) else None
+                if isinstance(d, str) and isinstance(t, str):
+                    return d, t
+            except (json.JSONDecodeError, OSError):
+                pass
+        return None, None
+
+    def _save(self) -> None:
+        atomic_write(
+            self._path,
+            json.dumps({"date": self._date, "thread_id": self._thread_id}),
+        )
 
     def ask(self, question: str, context: dict) -> str:
         ctx_date = context.get("date")
-        if ctx_date != self._current_date:
-            self._current_date = ctx_date
-            self._has_session = False
-        cmd = list(CODEX_RESUME_CMD if self._has_session else CODEX_CMD)
+        if ctx_date != self._date:
+            # Day rollover -> fresh session, drop yesterday's thread.
+            self._date = ctx_date
+            self._thread_id = None
+
+        if self._thread_id:
+            cmd = list(CODEX_CMD_QA_RESUME_PREFIX) + [self._thread_id]
+        else:
+            cmd = list(CODEX_CMD_QA)
+
         prompt_text = prompt_mod.build_qa_prompt(question, context)
         proc = subprocess.run(
             cmd, input=prompt_text,
             capture_output=True, text=True, timeout=CODEX_TIMEOUT,
         )
         if proc.returncode != 0:
-            self._has_session = False  # session might be invalid; restart next time
+            # Invalidate the thread_id so the next call doesn't blindly try
+            # to resume a dead session. _save() persists the cleared state.
+            self._thread_id = None
+            self._save()
             raise RuntimeError(
                 f"codex Q&A failed (rc={proc.returncode}): "
                 f"{(proc.stderr or '')[-1500:]}"
             )
-        self._has_session = True
-        # Re-use the same defensive JSONL scanner as the brief job.
+
+        lines = proc.stdout.splitlines()
+        if not self._thread_id:
+            tid = _extract_thread_id(lines)
+            if tid:
+                self._thread_id = tid
+                self._save()
+
         from . import brief
-        return brief.extract_final_message(proc.stdout.splitlines())
+        return brief.extract_final_message(lines)
 
 
 def load_context() -> dict | None:
@@ -268,6 +365,103 @@ def load_context() -> dict | None:
         return json.loads(p.read_text())
     except json.JSONDecodeError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# B1 circuit breaker + B2 notify integration
+# ---------------------------------------------------------------------------
+
+NOTIFY_SCRIPT = str(Path.home() / "work" / "bin" / "notify.sh")
+NOTIFY_AGENT = "vigil-listener"
+
+
+def notify_fatal(reason: str) -> None:
+    """Fire ~/work/bin/notify.sh once per failure episode. Best-effort: the
+    listener never raises out of a notify call.
+    """
+    try:
+        subprocess.run(
+            [NOTIFY_SCRIPT, NOTIFY_AGENT, "fatal", reason],
+            timeout=30, check=False,
+        )
+    except Exception as e:
+        print(f"listener: notify.sh failed: {e}", file=sys.stderr)
+
+
+class _CircuitBreaker:
+    """B1: rolling-window post counter. Trips inert (does NOT exit) when the
+    listener posts more than `threshold` answers in `window_seconds`.
+
+    Inert means: keep polling, keep advancing the cursor, just don't answer.
+    Exit would cause KeepAlive to restart -> re-trip -> notify-spam-and-flap.
+
+    State persisted to data/listener-breaker.json so the count survives
+    crash-restart loops (which the breaker should also catch). Manual reset:
+    delete the file then bootout/bootstrap the listener (or just delete the
+    file and wait for the breaker's `reload()` on the next poll iteration).
+    """
+
+    def __init__(self, data_dir: Path, *,
+                 window_seconds: int, threshold: int) -> None:
+        self._path = data_dir / "listener-breaker.json"
+        self._window = float(window_seconds)
+        self._threshold = int(threshold)
+        self._state = self._load()
+        # Suppress re-notify on restart-into-tripped: only notify on the
+        # *transition* from healthy to tripped this process saw.
+        self._notified_for_trip = bool(self._state.get("tripped"))
+
+    def _load(self) -> dict:
+        if not self._path.exists():
+            return {"post_timestamps": [], "tripped": False, "tripped_at": None}
+        try:
+            return json.loads(self._path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {"post_timestamps": [], "tripped": False, "tripped_at": None}
+
+    def _save(self) -> None:
+        atomic_write(self._path, json.dumps(self._state))
+
+    def reload(self) -> None:
+        """Re-read state from disk so an externally-deleted breaker file is
+        picked up without requiring a listener restart.
+        """
+        if not self._path.exists() and self._state.get("tripped"):
+            print(
+                "listener: breaker file missing — treating as external reset",
+                file=sys.stderr,
+            )
+            self._state = {"post_timestamps": [], "tripped": False, "tripped_at": None}
+            self._notified_for_trip = False
+
+    def is_tripped(self) -> bool:
+        return bool(self._state.get("tripped"))
+
+    def record_post_and_check_trip(self) -> bool:
+        """Record a successful post. Returns True iff this post just tripped
+        the breaker (transition from healthy to tripped) — caller should
+        notify once on True.
+        """
+        now = time.time()
+        cutoff = now - self._window
+        timestamps = [
+            t for t in (self._state.get("post_timestamps") or [])
+            if isinstance(t, (int, float)) and t >= cutoff
+        ]
+        timestamps.append(now)
+        self._state["post_timestamps"] = timestamps
+        was_tripped = self._state.get("tripped", False)
+        if len(timestamps) > self._threshold:
+            self._state["tripped"] = True
+            if not was_tripped:
+                self._state["tripped_at"] = now
+            self._save()
+            if not was_tripped and not self._notified_for_trip:
+                self._notified_for_trip = True
+                return True
+            return False
+        self._save()
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +481,9 @@ def main(argv: list[str] | None = None) -> int:
     poll_seconds = int(cfg["listener"]["poll_seconds"])
     fetch_limit = int(cfg["listener"]["fetch_limit"])
     own_prefixes = list(cfg["listener"]["own_content_prefixes"])
+    breaker_cfg = (cfg.get("listener") or {}).get("breaker") or {}
+    notify_cfg = (cfg.get("listener") or {}).get("notify") or {}
+    consec_failure_threshold = int(notify_cfg.get("consecutive_failures", 5))
 
     api_key = _load_api_key()
     data_dir = _paths.data_dir()
@@ -301,11 +498,25 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGINT, _on_signal)
 
     with httpx.Client(headers=_auth_headers(api_key)) as client:
-        bot_user_id = discover_bot_user_id(client, channel_id)
+        bot_user_id = load_bot_user_id(client, channel_id)
         print(f"listener: bot_user_id={bot_user_id}", file=sys.stderr)
 
         cursor = load_cursor(data_dir)
-        session = _CodexSession()
+        session = _CodexSession(data_dir)
+        breaker = _CircuitBreaker(
+            data_dir,
+            window_seconds=int(breaker_cfg.get("window_seconds", 300)),
+            threshold=int(breaker_cfg.get("threshold", 10)),
+        )
+        if breaker.is_tripped():
+            print(
+                "listener: started in TRIPPED state — polling but not "
+                "answering. Reset: rm data/listener-breaker.json, then restart.",
+                file=sys.stderr,
+            )
+
+        consecutive_failures = 0
+        notified_for_failure_episode = False
 
         print(
             f"listener: started, polling #{channel_id[:8]}.. every "
@@ -315,37 +526,58 @@ def main(argv: list[str] | None = None) -> int:
 
         while not _stop["flag"]:
             try:
+                breaker.reload()
                 messages = fetch_messages(client, channel_id, limit=fetch_limit)
-            except Exception as e:
-                print(f"listener: fetch failed: {e}", file=sys.stderr)
-                _sleep_interruptible(poll_seconds, _stop)
-                continue
+                messages.sort(key=lambda m: int(m.get("created_at") or 0))
 
-            # OWUI returns newest first; process chronologically.
-            messages.sort(key=lambda m: int(m.get("created_at") or 0))
+                new_cursor = cursor
+                for msg in messages:
+                    created_at = int(msg.get("created_at") or 0)
+                    if created_at <= cursor:
+                        continue
+                    if not should_answer(
+                        msg,
+                        bot_user_id=bot_user_id,
+                        own_content_prefixes=own_prefixes,
+                    ):
+                        new_cursor = max(new_cursor, created_at)
+                        continue
+                    if breaker.is_tripped():
+                        # Inert: skip the answer but advance cursor so we
+                        # don't re-evaluate the same backlog on every poll.
+                        new_cursor = max(new_cursor, created_at)
+                        continue
 
-            new_cursor = cursor
-            for msg in messages:
-                created_at = int(msg.get("created_at") or 0)
-                if created_at <= cursor:
-                    continue
-                if not is_question(
-                    msg,
-                    bot_user_id=bot_user_id,
-                    own_content_prefixes=own_prefixes,
-                ):
+                    _handle_question(
+                        client, channel_id, msg, session, breaker,
+                    )
                     new_cursor = max(new_cursor, created_at)
-                    continue
 
-                _handle_question(client, channel_id, msg, session)
-                new_cursor = max(new_cursor, created_at)
+                if new_cursor != cursor:
+                    cursor = new_cursor
+                    try:
+                        save_cursor(data_dir, cursor)
+                    except Exception as e:
+                        print(f"listener: cursor save failed: {e}", file=sys.stderr)
 
-            if new_cursor != cursor:
-                cursor = new_cursor
-                try:
-                    save_cursor(data_dir, cursor)
-                except Exception as e:
-                    print(f"listener: cursor save failed: {e}", file=sys.stderr)
+                # Loop completed cleanly: reset failure counter + episode flag.
+                consecutive_failures = 0
+                notified_for_failure_episode = False
+
+            except Exception as e:
+                consecutive_failures += 1
+                print(
+                    f"listener: loop failure {consecutive_failures}: "
+                    f"{type(e).__name__}: {e}",
+                    file=sys.stderr,
+                )
+                if (consecutive_failures >= consec_failure_threshold
+                        and not notified_for_failure_episode):
+                    notified_for_failure_episode = True
+                    notify_fatal(
+                        f"{consecutive_failures} consecutive listener loop "
+                        f"failures; latest: {type(e).__name__}: {e}"
+                    )
 
             _sleep_interruptible(poll_seconds, _stop)
 
@@ -354,7 +586,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _handle_question(client: httpx.Client, channel_id: str,
-                     question: dict, session: _CodexSession) -> None:
+                     question: dict, session: _CodexSession,
+                     breaker: _CircuitBreaker) -> None:
     qid = question["id"]
     qtext = question.get("content", "").strip()
     if not qtext:
@@ -382,6 +615,14 @@ def _handle_question(client: httpx.Client, channel_id: str,
         )
     except Exception as e:
         print(f"listener: reply post failed for q={qid[:8]}: {e}", file=sys.stderr)
+        return
+
+    if breaker.record_post_and_check_trip():
+        notify_fatal(
+            f"circuit breaker tripped: posted more than threshold answers in "
+            f"the rolling window. Listener is now inert. Reset: rm "
+            f"data/listener-breaker.json, then bootout/bootstrap the listener."
+        )
 
 
 def _sleep_interruptible(seconds: float, stop_flag: dict) -> None:

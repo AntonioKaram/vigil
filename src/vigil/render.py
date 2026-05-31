@@ -55,6 +55,12 @@ def render_markdown(brief: dict) -> str:
     items = brief.get("cves") or []
     if items:
         for it in items:
+            if it.get("type") == "kernel_summary":
+                parts.append(f"- _{it.get('rationale', '')}_")
+                cve_ids = it.get("cve_ids") or []
+                if cve_ids:
+                    parts.append(f"  CVEs: {', '.join(cve_ids)}")
+                continue
             parts.append(_md_cve_line(it))
             if it.get("rationale"):
                 parts.append(f"  {it['rationale']}")

@@ -81,7 +81,20 @@
     </div>
     <div class="section">
       <h2>3 &middot; New high-severity CVEs</h2>
-      {% if brief.cves %}{% for it in brief.cves %}{{ cve_item(it) }}{% endfor %}
+      {% if brief.cves %}
+        {% for it in brief.cves %}
+          {% if it.type == 'kernel_summary' %}
+            <div class="item" style="border-left-color:#9aa3ad;">
+              <p class="why" style="margin:2px 0;">{{ it.rationale }}</p>
+              <details style="font-size:12px;color:#6b7280;margin-top:6px;">
+                <summary>show {{ it.count }} CVE ids</summary>
+                <span style="font-family:SFMono-Regular,Consolas,Menlo,monospace;">{{ it.cve_ids|join(', ') }}</span>
+              </details>
+            </div>
+          {% else %}
+            {{ cve_item(it) }}
+          {% endif %}
+        {% endfor %}
       {% else %}<p class="empty">Nothing new today.</p>{% endif %}
     </div>
     <div class="section">
