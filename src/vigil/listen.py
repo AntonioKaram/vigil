@@ -140,6 +140,60 @@ def fetch_messages(client: httpx.Client, channel_id: str, *,
     return r.json()
 
 
+def fetch_thread(client: httpx.Client, channel_id: str,
+                 parent_message_id: str) -> list[dict]:
+    """Fetch a single message's thread. Returns a flat list that may include
+    the parent itself plus all replies; caller is responsible for dedupe.
+    """
+    r = client.get(
+        f"{OWUI_URL}/api/v1/channels/{channel_id}/messages/{parent_message_id}/thread",
+        timeout=HTTP_TIMEOUT,
+    )
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_messages_with_threads(client: httpx.Client, channel_id: str, *,
+                                limit: int,
+                                thread_lookback_seconds: float,
+                                now_seconds: float | None = None,
+                                ) -> list[dict]:
+    """v1.2.1: top-level messages + threads for any recent enough parent.
+
+    OWUI's `/messages` endpoint returns top-level messages only, so threaded
+    replies stay invisible to flat polling. Threaded operator follow-ups
+    (e.g., 'Reply' under the daily brief) end up silently dropped without
+    this. Lookback bounds the cost: we only fetch threads for top-level
+    messages whose created_at is within `thread_lookback_seconds` of now.
+    """
+    if now_seconds is None:
+        now_seconds = time.time()
+    cutoff_ns = int((now_seconds - thread_lookback_seconds) * 1_000_000_000)
+
+    top_level = fetch_messages(client, channel_id, limit=limit)
+    seen_by_id: dict[str, dict] = {m["id"]: m for m in top_level if m.get("id")}
+
+    for parent in top_level:
+        if int(parent.get("created_at") or 0) < cutoff_ns:
+            continue
+        # Skip threads with no replies — saves the round-trip.
+        if not parent.get("reply_count"):
+            continue
+        try:
+            thread = fetch_thread(client, channel_id, parent["id"])
+        except Exception as e:
+            print(
+                f"listener: thread fetch failed for {parent['id'][:8]}: {e}",
+                file=sys.stderr,
+            )
+            continue
+        for m in thread:
+            mid = m.get("id")
+            if mid:
+                seen_by_id.setdefault(mid, m)
+    return list(seen_by_id.values())
+
+
 # ---------------------------------------------------------------------------
 # bot identity discovery (B4: pinned to secrets/owui-bot-id, probe is fallback)
 # ---------------------------------------------------------------------------
@@ -480,6 +534,7 @@ def main(argv: list[str] | None = None) -> int:
     channel_id = cfg["delivery"]["channel_id"]
     poll_seconds = int(cfg["listener"]["poll_seconds"])
     fetch_limit = int(cfg["listener"]["fetch_limit"])
+    thread_lookback = float(cfg["listener"].get("thread_lookback_seconds", 86400))
     own_prefixes = list(cfg["listener"]["own_content_prefixes"])
     breaker_cfg = (cfg.get("listener") or {}).get("breaker") or {}
     notify_cfg = (cfg.get("listener") or {}).get("notify") or {}
@@ -527,7 +582,11 @@ def main(argv: list[str] | None = None) -> int:
         while not _stop["flag"]:
             try:
                 breaker.reload()
-                messages = fetch_messages(client, channel_id, limit=fetch_limit)
+                messages = fetch_messages_with_threads(
+                    client, channel_id,
+                    limit=fetch_limit,
+                    thread_lookback_seconds=thread_lookback,
+                )
                 messages.sort(key=lambda m: int(m.get("created_at") or 0))
 
                 new_cursor = cursor

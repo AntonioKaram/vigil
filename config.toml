@@ -56,8 +56,13 @@ channel_id = "a415b633-8cd4-4017-adba-c96f97bcec28"
 # How often the listener polls for new operator questions. The spec
 # accepts up to ~30s; 25s is a reasonable middle.
 poll_seconds = 25
-# Max messages fetched per poll (newest-first; client-side filter trims).
+# Max top-level messages fetched per poll (newest-first; client-side filter trims).
 fetch_limit = 50
+# v1.2.1: also fetch threads of top-level messages whose created_at is
+# within this many seconds of now. OWUI's /messages endpoint returns
+# top-level only, so without this the listener never sees threaded operator
+# replies (e.g. follow-ups posted under the daily brief).
+thread_lookback_seconds = 86400
 # Content prefixes that identify vigil's own posts (webhook brief +
 # notify alerts) so the listener doesn't try to answer them. The notify
 # prefix is "[vigil" without the closing bracket so it catches both

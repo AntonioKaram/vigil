@@ -1,0 +1,47 @@
+# vigil stack profile — operator-authored. Read by A6 (stack-relevance filter).
+#
+# Safety rule that drives every entry below: this profile reduces noise, it
+# NEVER suppresses confirmed risk. A CVE is dropped only if it matches a
+# not_run entry AND is not KEV-listed AND its EPSS is below the act-now
+# threshold. Exploited-in-the-wild and high-EPSS items always survive the
+# filter regardless of what's listed here.
+#
+# Three buckets:
+#   [runs]    -> kept and prioritized
+#   [not_run] -> eligible for hard-drop (subject to the safety rule above)
+#   implicit "unknown" (anything matching neither) -> kept, deprioritized
+#
+# Matching is case-insensitive substring on vendor/product/description,
+# plus kernel-subsystem token match for kernel CVEs.
+
+[runs]
+# Confirmed from the box. Update freely.
+os          = ["macos"]
+self_hosted = ["open-webui", "vibe-kanban"]
+languages   = ["python", "node"]
+
+# FILL IN:
+cloud       = []  # e.g. "oracle cloud", "aws", "fly.io"
+web_app     = []  # e.g. "nginx", "caddy", "wordpress"
+databases   = []  # e.g. "postgres", "sqlite", "redis"
+
+[not_run]
+# Confirmed absent. Items here are eligible for hard-drop (safety rule still
+# applies). Start conservative: enable a line only when you are certain that
+# subsystem / product is irrelevant to your environment.
+#
+# Candidate kernel subsystems seeded from the items that have been flooding
+# recent vigil briefs. UNCOMMENT each line you're certain you don't run.
+kernel_subsystems = [
+  # "smb client",       # CIFS/SMB client (you'd mount SMB shares)
+  # "nvme/tcp target",  # NVMe-oF over TCP target (storage server)
+  # "ceph",             # Ceph kernel client
+  # "libceph",          # Ceph user-space lib reachable from kernel
+  # "rdma/rxe",         # Soft-RoCE / RDMA over Ethernet
+  # "mptcp",            # Multipath TCP
+  # "ipv6 rpl",         # Routing Protocol for Low-Power IPv6 networks
+  # "rxrpc",            # RxRPC (used by AFS / OpenAFS)
+  # "block-layer",      # generic block layer; be careful uncommenting — affects most storage
+]
+
+products = []  # e.g. specific apps you know you don't run, "wordpress", "exchange", "fortigate"
