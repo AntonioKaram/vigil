@@ -57,9 +57,15 @@ CODEX_CMD_QA = [
 # B3: resume by explicit thread_id (UUID), never --last. The SESSION_ID is
 # a positional argument that follows OPTIONS per `codex exec resume --help`.
 # Append the thread_id at call time.
+#
+# v1.2.2 fix: `codex exec resume` rejects `--sandbox` (it inherits the
+# sandbox policy set at session start) — leaving it in here was the latent
+# B3 bug that produced "error: unexpected argument '--sandbox' found" on
+# follow-up Q&A calls. `--skip-git-repo-check`, `--enable`, and `--json`
+# are all valid at resume time per `codex exec resume --help`.
 CODEX_CMD_QA_RESUME_PREFIX = [
     "codex", "exec", "resume",
-    "--json", "--sandbox", "read-only",
+    "--json",
     "--skip-git-repo-check",
     "--enable", "web_search",
 ]
