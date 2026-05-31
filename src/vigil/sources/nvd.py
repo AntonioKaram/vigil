@@ -140,6 +140,29 @@ def extract_cvss(cve_item: dict) -> dict | None:
     }
 
 
+def extract_vendor_product(cve_item: dict) -> tuple[str, str]:
+    """Pull (vendor, product) from the first vulnerable CPE in configurations.
+
+    CPE 2.3 format: cpe:2.3:<part>:<vendor>:<product>:<version>:...
+    Returns ('', '') if no parseable CPE — Codex's rationale plus the
+    description still give the reader context.
+    """
+    cve = cve_item.get("cve") or {}
+    for cfg in cve.get("configurations") or []:
+        for node in cfg.get("nodes") or []:
+            for match in node.get("cpeMatch") or []:
+                if not match.get("vulnerable"):
+                    continue
+                cpe = match.get("criteria", "")
+                parts = cpe.split(":")
+                if len(parts) >= 5 and parts[0] == "cpe" and parts[1] == "2.3":
+                    vendor = parts[3].replace("_", " ")
+                    product = parts[4].replace("_", " ")
+                    if vendor or product:
+                        return vendor, product
+    return "", ""
+
+
 def extract_summary(cve_item: dict) -> dict:
     cve = cve_item.get("cve") or {}
     cid = cve.get("id")
@@ -153,6 +176,7 @@ def extract_summary(cve_item: dict) -> dict:
             v = d.get("value", "")
             if v.startswith("CWE-") and v not in cwe:
                 cwe.append(v)
+    vendor, product = extract_vendor_product(cve_item)
     return {
         "cve": cid,
         "published": cve.get("published"),
@@ -160,4 +184,6 @@ def extract_summary(cve_item: dict) -> dict:
         "description": en,
         "cwe": cwe,
         "cvss": extract_cvss(cve_item),
+        "vendor": vendor,
+        "product": product,
     }

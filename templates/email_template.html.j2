@@ -1,0 +1,105 @@
+{# vigil brief HTML email. Renders from the structured brief object (see v1.1 spec).
+   Severity color band per item; source badges; EPSS inline; empty sections muted.
+   Inline styles on color-critical elements for mail-client safety; <style> for typography. #}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>vigil brief {{ brief.date }}</title>
+<style>
+  body { margin:0; padding:0; background:#f4f5f7; }
+  .wrap { width:100%; background:#f4f5f7; padding:24px 0; }
+  .card { max-width:600px; margin:0 auto; background:#ffffff; border-radius:10px;
+          overflow:hidden; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+          color:#1a1d21; }
+  .head { padding:20px 24px; background:#13161a; color:#ffffff; }
+  .head h1 { margin:0; font-size:18px; letter-spacing:0.3px; }
+  .head .sub { margin:4px 0 0; font-size:12px; color:#9aa3ad; }
+  .note { padding:12px 24px; background:#fff8e1; color:#6b5800; font-size:13px; }
+  .section { padding:18px 24px 4px; }
+  .section h2 { margin:0 0 10px; font-size:13px; text-transform:uppercase;
+                letter-spacing:0.6px; color:#5b6470; }
+  .empty { color:#9aa3ad; font-size:13px; font-style:italic; padding-bottom:10px; }
+  .item { border-left:4px solid #c7ccd1; padding:10px 12px; margin:0 0 10px;
+          background:#fbfcfd; border-radius:0 6px 6px 0; }
+  .item .line1 { font-size:14px; margin:0 0 3px; }
+  .item .cve { font-family:SFMono-Regular,Consolas,Menlo,monospace; font-weight:600;
+               text-decoration:none; color:#0b66c3; }
+  .item .why { font-size:13px; color:#3a4047; margin:4px 0 0; line-height:1.45; }
+  .item .meta { font-size:12px; color:#6b7280; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:1px 7px;
+           border-radius:10px; margin-left:4px; vertical-align:middle; }
+  .b-src { background:#eef1f4; color:#4a5260; }
+  .b-epss { background:#e8f0fe; color:#1b4ea8; }
+  .b-kev { background:#fdecea; color:#a61b14; }
+  .b-due { background:#fff1e6; color:#9a4a00; }
+  .b-rise { background:#e9f7ef; color:#1c7a45; }
+  .news { padding:8px 0; border-bottom:1px solid #eef1f4; }
+  .news:last-child { border-bottom:none; }
+  .news a { color:#0b66c3; text-decoration:none; font-size:14px; font-weight:600; }
+  .news .src { font-size:12px; color:#8a929c; }
+  .news .rel { font-size:13px; color:#3a4047; margin-top:2px; }
+  .foot { padding:16px 24px; font-size:11px; color:#9aa3ad; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="head">
+      <h1>vigil &middot; daily cyber brief</h1>
+      <div class="sub">{{ brief.date }} &nbsp;|&nbsp; run {{ brief.run_id }}</div>
+    </div>
+    {% if brief.notes %}<div class="note">{{ brief.notes }}</div>{% endif %}
+    {# ---- macro: one CVE item with severity band ---- #}
+    {% macro cve_item(it, show_rise=False) %}
+      {% if it.cvss is not none and it.cvss >= 9.0 %}{% set band = '#c0392b' %}
+      {% elif it.cvss is not none and it.cvss >= 7.0 %}{% set band = '#e67e22' %}
+      {% else %}{% set band = '#b8a93a' %}{% endif %}
+      <div class="item" style="border-left-color:{{ band }};">
+        <p class="line1">
+          <a class="cve" href="https://nvd.nist.gov/vuln/detail/{{ it.cve_id }}">{{ it.cve_id }}</a>
+          {% if it.cvss is not none %}<span class="badge b-src">CVSS {{ '%.1f'|format(it.cvss) }} ({{ it.cvss_source }})</span>{% else %}<span class="badge b-src">no CVSS</span>{% endif %}
+          {% if it.epss is not none %}<span class="badge b-epss">EPSS {{ '%.2f'|format(it.epss) }}</span>{% endif %}
+          {% if it.kev %}<a class="badge b-kev" href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" style="text-decoration:none;">KEV</a>{% endif %}
+          {% if it.due_date %}<span class="badge b-due">due {{ it.due_date }}</span>{% endif %}
+          {% if show_rise and it.epss_prev is not none %}<span class="badge b-rise">+{{ '%.2f'|format(it.epss_delta) }}</span>{% endif %}
+        </p>
+        <p class="meta">{{ it.vendor }}{% if it.product %} &middot; {{ it.product }}{% endif %}</p>
+        {% if it.rationale %}<p class="why">{{ it.rationale }}</p>{% endif %}
+      </div>
+    {% endmacro %}
+    <div class="section">
+      <h2>1 &middot; Act now</h2>
+      {% if brief.act_now %}{% for it in brief.act_now %}{{ cve_item(it) }}{% endfor %}
+      {% else %}<p class="empty">Nothing new today.</p>{% endif %}
+    </div>
+    <div class="section">
+      <h2>2 &middot; Rising risk (EPSS movers)</h2>
+      {% if brief.rising %}{% for it in brief.rising %}{{ cve_item(it, show_rise=True) }}{% endfor %}
+      {% else %}<p class="empty">Nothing new today.</p>{% endif %}
+    </div>
+    <div class="section">
+      <h2>3 &middot; New high-severity CVEs</h2>
+      {% if brief.cves %}{% for it in brief.cves %}{{ cve_item(it) }}{% endfor %}
+      {% else %}<p class="empty">Nothing new today.</p>{% endif %}
+    </div>
+    <div class="section">
+      <h2>4 &middot; In the news</h2>
+      {% if brief.news %}{% for n in brief.news %}
+        <div class="news">
+          <a href="{{ n.url }}">{{ n.title }}</a>
+          <span class="src">&nbsp;{{ n.source }}</span>
+          {% if n.relevance %}<div class="rel">{{ n.relevance }}</div>{% endif %}
+        </div>
+      {% endfor %}{% else %}<p class="empty">Nothing new today.</p>{% endif %}
+    </div>
+    <div class="foot">
+      Generated by vigil on the Jarvis box. CVSS source labels indicate whether a score is
+      NVD-validated or CNA/third-party supplied; post-April 2026, most fresh CVEs are not NVD-scored,
+      so EPSS and KEV are the stronger signals. Reply in #vigil to ask a follow-up.
+    </div>
+  </div>
+</div>
+</body>
+</html>

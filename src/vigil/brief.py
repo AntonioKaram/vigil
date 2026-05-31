@@ -1,9 +1,19 @@
 """Call Codex (read-only sandbox) and extract the final agent message.
 
-Per spec: `codex exec --json --sandbox read-only`. The JSONL event schema
-has drifted in past versions (completion event was renamed turn.completed
-where older tooling expected response.completed), so we scan event payloads
-structurally rather than hardcoding event-type paths.
+v1: `codex exec --json --sandbox read-only --skip-git-repo-check` (+ stdin
+prompt). The JSONL event schema has drifted in past versions (completion
+event was renamed turn.completed where older tooling expected
+response.completed), so we scan event payloads structurally rather than
+hardcoding event-type paths.
+
+v1.1: same Codex invocation; the *brief* prompt now asks Codex for a JSON
+rationale object. parse_rationale_json() pulls that object out defensively
+(handles bare JSON, ```json fences, prose preambles, etc.); on parse failure
+it returns an empty rationale skeleton so the renderer can still produce
+output from Python's structured data.
+
+For Q&A (Feature 2), run_codex(..., web_search=True) flips the web-search
+feature on. Session-resume is handled by the caller (listen.py).
 """
 from __future__ import annotations
 
@@ -21,14 +31,23 @@ CONTAINER_FIELDS = (
 )
 
 
-def run_codex(prompt: str, *, timeout: int = 600) -> str:
+def run_codex(prompt: str, *,
+              timeout: int = 600,
+              web_search: bool = False) -> str:
     """Send prompt to Codex on stdin; return the final assistant message text.
 
+    Set web_search=True for Q&A invocations (operator-approved injection risk
+    is in scope: RSS-sourced URLs may be attacker-controlled, but the Q&A
+    system prompt instructs Codex to treat fetched content as untrusted data).
+
     If `codex exec` in your build doesn't accept stdin, swap to passing the
-    prompt as a positional argument: CODEX_CMD + [prompt].
+    prompt as a positional argument: cmd + [prompt].
     """
+    cmd = list(CODEX_CMD)
+    if web_search:
+        cmd += ["--enable", "web_search"]
     proc = subprocess.run(
-        CODEX_CMD,
+        cmd,
         input=prompt,
         capture_output=True,
         text=True,
@@ -92,3 +111,108 @@ def _harvest_text(evt, depth: int = 0) -> str:
             if sub:
                 chunks.append(sub)
     return "\n".join(chunks).strip()
+
+
+# ---------------------------------------------------------------------------
+# Rationale-JSON parsing (v1.1 brief output)
+# ---------------------------------------------------------------------------
+
+def empty_rationale() -> dict:
+    """Empty rationale shape — used as the fallback when parsing fails."""
+    return {"notes": None, "act_now": [], "rising": [], "cves": [], "news": []}
+
+
+def parse_rationale_json(text: str) -> dict:
+    """Parse Codex's brief-rationale JSON defensively.
+
+    Tries (in order): bare JSON, ```json fence, ``` fence, outermost {...}
+    block. On any failure, returns empty_rationale() so the renderer can
+    still merge with Python's structured data and produce output.
+
+    Returns a dict with keys: notes (str|None), act_now/rising/cves/news
+    (lists of dicts). Unexpected/malformed entries are filtered out.
+    """
+    parsed = _try_parse(text)
+    if not isinstance(parsed, dict):
+        return empty_rationale()
+    return {
+        "notes": parsed["notes"] if isinstance(parsed.get("notes"), str) else None,
+        "act_now": _list_of_dicts(parsed.get("act_now")),
+        "rising":  _list_of_dicts(parsed.get("rising")),
+        "cves":    _list_of_dicts(parsed.get("cves")),
+        "news":    _list_of_dicts(parsed.get("news")),
+    }
+
+
+def _try_parse(text: str):
+    """Return a parsed object or None. Tries multiple strategies."""
+    text = text.strip()
+    if not text:
+        return None
+    # 1. Bare JSON
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    # 2. ```json ... ``` fence
+    for fence in ("```json", "```JSON", "```"):
+        i = text.find(fence)
+        if i == -1:
+            continue
+        body_start = text.find("\n", i)
+        if body_start == -1:
+            continue
+        body_start += 1
+        end = text.find("```", body_start)
+        if end == -1:
+            continue
+        try:
+            return json.loads(text[body_start:end].strip())
+        except json.JSONDecodeError:
+            continue
+    # 3. Outermost balanced {...} block
+    block = _outermost_brace_block(text)
+    if block:
+        try:
+            return json.loads(block)
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def _outermost_brace_block(text: str) -> str | None:
+    """Find first '{' and return through its matching '}'.
+
+    Tracks strings and escapes so JSON-quoted braces don't confuse balance.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+    return None
+
+
+def _list_of_dicts(v) -> list[dict]:
+    if not isinstance(v, list):
+        return []
+    return [x for x in v if isinstance(x, dict)]

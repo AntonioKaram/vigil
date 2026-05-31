@@ -52,19 +52,25 @@ def _load_creds() -> tuple[str, str]:
     return password, recipient
 
 
-def send_brief(*, subject: str, body: str) -> None:
-    """Send the brief to the operator's personal address.
+def send_brief(*, subject: str, text_body: str, html_body: str | None = None) -> None:
+    """Send the brief to the operator as multipart/alternative (text + HTML).
 
-    Raises on auth failure, transport failure, or any SMTP error. The
-    caller decides whether to surface (success path: log + continue) or
-    page (failure path: notify).
+    The plain-text leg is always populated — it doubles as the TTS-friendly
+    source per the spec. When html_body is None, sends text-only. Most mail
+    clients will prefer the HTML leg when present; text-only and accessibility
+    clients see the plain version.
+
+    Raises on auth or transport failure; caller decides whether to surface
+    (success path: log + continue) or page (failure path: notify).
     """
     password, recipient = _load_creds()
     msg = EmailMessage()
     msg["From"] = SENDER
     msg["To"] = recipient
     msg["Subject"] = subject
-    msg.set_content(body)
+    msg.set_content(text_body)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, context=ctx, timeout=TIMEOUT) as s:
         s.login(SENDER, password)
